@@ -20,7 +20,12 @@ jobs:
           gradle-version: 8.9
 
       - name: Build debug APK
-        run: gradle assembleDebug --no-daemon
+        run: |
+          set -o pipefail
+          gradle assembleDebug --no-daemon --console=plain 2>&1 | tee build.log || {
+            grep -E "^e: |error:|What went wrong" -A2 build.log | head -30 | while IFS= read -r l; do echo "::error::$l"; done
+            exit 1
+          }
 
       - uses: actions/upload-artifact@v4
         with:
