@@ -23,7 +23,6 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.Switch
 import android.widget.TextView
 
 private val BG = Color.parseColor("#0E1A21")
@@ -46,7 +45,6 @@ class MainActivity : Activity() {
     private lateinit var listBox: LinearLayout
     private lateinit var countView: TextView
     private lateinit var setButton: Button
-    private lateinit var deleteSwitch: Switch
     private lateinit var statusView: TextView
 
     private val handler = Handler(Looper.getMainLooper())
@@ -162,52 +160,11 @@ class MainActivity : Activity() {
         return r
     }
 
-    private fun loadLast(): List<AlarmItem> {
-        val raw = getSharedPreferences("alarms", Context.MODE_PRIVATE).getString("last", "") ?: ""
-        return raw.split("\n").mapNotNull { line ->
-            val parts = line.split("|", limit = 2)
-            val m = parts.getOrNull(0)?.toIntOrNull() ?: return@mapNotNull null
-            AlarmItem(m, parts.getOrElse(1) { "" })
-        }
-    }
-
-    private fun saveLast(list: List<AlarmItem>) {
-        getSharedPreferences("alarms", Context.MODE_PRIVATE).edit()
-            .putString("last", list.joinToString("\n") { "${it.minutes}|${it.label}" })
-            .apply()
-    }
-
     private fun setAlarms() {
         if (items.isEmpty()) return
         handler.removeCallbacksAndMessages(null)
         val toSet = items
-        val old = if (deleteSwitch.isChecked) loadLast() else emptyList()
-        var delay = 0L
-        var deleteFailed = false
-
-        // First remove the alarms this app set last time.
-        old.forEach { item ->
-            handler.postDelayed({
-                val del = Intent("android.intent.action.DELETE_ALARM").apply {
-                    putExtra(AlarmClock.EXTRA_ALARM_SEARCH_MODE, AlarmClock.ALARM_SEARCH_MODE_TIME)
-                    putExtra(AlarmClock.EXTRA_HOUR, item.minutes / 60)
-                    putExtra(AlarmClock.EXTRA_MINUTES, item.minutes % 60)
-                    putExtra(AlarmClock.EXTRA_IS_PM, item.minutes / 60 >= 12)
-                    putExtra(AlarmClock.EXTRA_SKIP_UI, true)
-                }
-                try {
-                    startActivity(del)
-                } catch (e: Exception) {
-                    if (!deleteFailed) {
-                        deleteFailed = true
-                        statusView.append("\nאפליקציית השעון לא תומכת במחיקה אוטומטית. את הישנים צריך למחוק ידנית.")
-                    }
-                }
-            }, delay)
-            delay += 1200L
-        }
-
-        toSet.forEach { item ->
+        toSet.forEachIndexed { index, item ->
             handler.postDelayed({
                 val alarm = Intent(AlarmClock.ACTION_SET_ALARM).apply {
                     putExtra(AlarmClock.EXTRA_HOUR, item.minutes / 60)
@@ -220,14 +177,17 @@ class MainActivity : Activity() {
                 } catch (e: Exception) {
                     statusView.append("\nנכשל: ${fmt(item.minutes)} ${item.label}")
                 }
-            }, delay)
-            delay += 1200L
+            }, index * 1200L)
         }
+        statusView.text = "נשלחו ${toSet.size} שעונים לאפליקציית השעון.\nכדאי לבדוק שם שהכול נקבע."
+    }
 
-        saveLast(if (deleteSwitch.isChecked) toSet else (loadLast() + toSet).distinct())
-
-        val deleted = if (old.isNotEmpty()) "ביקשתי למחוק ${old.size} שעונים מהפעם הקודמת. " else ""
-        statusView.text = deleted + "נשלחו ${toSet.size} שעונים חדשים לאפליקציית השעון.\nכדאי לבדוק שם שהכול נקבע."
+    private fun openAlarmList() {
+        try {
+            startActivity(Intent(AlarmClock.ACTION_SHOW_ALARMS))
+        } catch (e: Exception) {
+            statusView.text = "לא הצלחתי לפתוח את אפליקציית השעון."
+        }
     }
 
     private fun fmt(m: Int) = "%02d:%02d".format(m / 60, m % 60)
@@ -378,14 +338,6 @@ class MainActivity : Activity() {
             .apply { marginStart = dp(12) })
         settingsCard.addView(ruleRow)
 
-        deleteSwitch = Switch(this).apply {
-            text = "מחק קודם את השעונים שהאפליקציה קבעה בפעם הקודמת"
-            textSize = 14f
-            setTextColor(TEXT)
-            isChecked = true
-            setPadding(0, dp(16), 0, 0)
-        }
-        settingsCard.addView(deleteSwitch)
         column.addView(settingsCard, cardParams())
 
         // Action
@@ -404,6 +356,21 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
+
+        val listButton = Button(this).apply {
+            text = "פתח את רשימת השעונים"
+            textSize = 15f
+            isAllCaps = false
+            setTextColor(BLUE)
+            background = rounded(CARD, 16)
+            stateListAnimator = null
+            minHeight = dp(50)
+            setOnClickListener { openAlarmList() }
+        }
+        column.addView(listButton, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(10) })
 
         statusView = TextView(this).apply {
             textSize = 14f
