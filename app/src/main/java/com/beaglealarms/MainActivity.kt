@@ -183,11 +183,12 @@ class MainActivity : Activity() {
         val toSet = items
         val old = if (deleteSwitch.isChecked) loadLast() else emptyList()
         var delay = 0L
+        var deleteFailed = false
 
         // First remove the alarms this app set last time.
         old.forEach { item ->
             handler.postDelayed({
-                val del = Intent(AlarmClock.ACTION_DELETE_ALARM).apply {
+                val del = Intent("android.intent.action.DELETE_ALARM").apply {
                     putExtra(AlarmClock.EXTRA_ALARM_SEARCH_MODE, AlarmClock.ALARM_SEARCH_MODE_TIME)
                     putExtra(AlarmClock.EXTRA_HOUR, item.minutes / 60)
                     putExtra(AlarmClock.EXTRA_MINUTES, item.minutes % 60)
@@ -197,7 +198,10 @@ class MainActivity : Activity() {
                 try {
                     startActivity(del)
                 } catch (e: Exception) {
-                    // The clock app does not support deleting; the new alarms are still set.
+                    if (!deleteFailed) {
+                        deleteFailed = true
+                        statusView.append("\nאפליקציית השעון לא תומכת במחיקה אוטומטית. את הישנים צריך למחוק ידנית.")
+                    }
                 }
             }, delay)
             delay += 1200L
