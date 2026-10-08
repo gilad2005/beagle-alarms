@@ -13,8 +13,11 @@ import android.os.Looper
 import android.provider.AlarmClock
 import android.text.Editable
 import android.text.InputType
+import android.text.Spanned
 import android.text.TextWatcher
+import android.text.style.BackgroundColorSpan
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
@@ -31,6 +34,7 @@ private val MUTED = Color.parseColor("#8DA4AF")
 private val ACCENT = Color.parseColor("#F29A4A")
 private val ON_ACCENT = Color.parseColor("#1D1105")
 private val BLUE = Color.parseColor("#6FB3D2")
+private val HIGHLIGHT = Color.parseColor("#66F29A4A")
 
 class MainActivity : Activity() {
 
@@ -92,6 +96,7 @@ class MainActivity : Activity() {
         val ruleName = ruleNameBox.text.toString().trim()
         val ruleLead = ruleLeadBox.text.toString().toIntOrNull() ?: 0
         items = AlarmParser.parse(messageBox.text.toString(), name, ruleName, ruleLead)
+        highlightLines(name)
 
         listBox.removeAllViews()
         if (items.isEmpty()) {
@@ -113,6 +118,24 @@ class MainActivity : Activity() {
         countView.text = if (items.isEmpty()) "" else "${items.size} שעונים"
         setButton.isEnabled = items.isNotEmpty()
         setButton.alpha = if (items.isEmpty()) 0.4f else 1f
+    }
+
+    /** Marks every line of the message that contains the chosen name. */
+    private fun highlightLines(name: String) {
+        val editable = messageBox.text
+        editable.getSpans(0, editable.length, BackgroundColorSpan::class.java)
+            .forEach { editable.removeSpan(it) }
+        if (name.isEmpty()) return
+        var start = 0
+        for (line in editable.toString().split("\n")) {
+            if (line.contains(name)) {
+                editable.setSpan(
+                    BackgroundColorSpan(HIGHLIGHT), start, start + line.length,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+            }
+            start += line.length + 1
+        }
     }
 
     private fun row(item: AlarmItem): View {
@@ -250,9 +273,21 @@ class MainActivity : Activity() {
         messageBox = styled(EditText(this)).apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             minLines = 6
-            maxLines = 10
+            maxHeight = dp(280)
             gravity = Gravity.TOP or Gravity.START
             hint = "ההודעה תודבק כאן אוטומטית"
+            isVerticalScrollBarEnabled = true
+            setHorizontallyScrolling(false)
+            // Let the message scroll by itself inside the page scroll.
+            setOnTouchListener { v, event ->
+                if (v.canScrollVertically(1) || v.canScrollVertically(-1)) {
+                    v.parent.requestDisallowInterceptTouchEvent(true)
+                    if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
+                        v.parent.requestDisallowInterceptTouchEvent(false)
+                    }
+                }
+                false
+            }
         }
         messageCard.addView(messageBox, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
