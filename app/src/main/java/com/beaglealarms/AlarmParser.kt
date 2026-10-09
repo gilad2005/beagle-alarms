@@ -21,6 +21,10 @@ object AlarmParser {
     fun parseNames(text: String): List<String> =
         text.split(',', '\n', '،').map { it.trim() }.filter { it.isNotEmpty() }
 
+    /** The task names found in the message, in order: every *Header* line. */
+    fun sections(text: String): List<String> =
+        text.lines().mapNotNull { header.find(it.trim())?.groupValues?.get(1) }.distinct()
+
     /** One rule per line, for example "Task name = 30". */
     fun parseRules(text: String): Map<String, Int> {
         val result = LinkedHashMap<String, Int>()

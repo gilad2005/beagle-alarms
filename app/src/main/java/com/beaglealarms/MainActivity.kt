@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -21,9 +22,11 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import java.util.Calendar
 
 private val BG = Color.parseColor("#0E1A21")
 private val CARD = Color.parseColor("#172730")
@@ -38,23 +41,39 @@ private val HIGHLIGHT = Color.parseColor("#66F29A4A")
 
 class MainActivity : Activity() {
 
+    private lateinit var prefs: SharedPreferences
     private lateinit var messageBox: EditText
     private lateinit var nameBox: EditText
-    private lateinit var rulesBox: EditText
     private lateinit var leadBox: EditText
+    private lateinit var rulesList: LinearLayout
+    private lateinit var chipsWrap: LinearLayout
+    private lateinit var chipsRow: LinearLayout
     private lateinit var listBox: LinearLayout
     private lateinit var countView: TextView
+    private lateinit var dayView: TextView
     private lateinit var setButton: Button
     private lateinit var statusView: TextView
+    private val segViews = ArrayList<TextView>()
 
     private val handler = Handler(Looper.getMainLooper())
     private var items: List<AlarmItem> = emptyList()
     private var lastClip: String = ""
 
+    /** 0 = automatic, 1 = today, 2 = tomorrow */
+    private var dayMode = 0
+
+    private val watcher = object : TextWatcher {
+        override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+        override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+        override fun afterTextChanged(s: Editable?) { saveAndRefresh() }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.statusBarColor = BG
         window.navigationBarColor = BG
+        prefs = getSharedPreferences("settings", Context.MODE_PRIVATE)
+        dayMode = prefs.getInt("dayMode", 0)
         buildUi()
         handleIncoming()
         refresh()
@@ -64,6 +83,8 @@ class MainActivity : Activity() {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) pasteFromClipboard()
     }
+
+    // ---------------------------------------------------------------- input
 
     /** Whatever was copied (for example from WhatsApp) is pasted automatically when the app opens. */
     private fun pasteFromClipboard() {
@@ -92,12 +113,134 @@ class MainActivity : Activity() {
         }
     }
 
+    // ------------------------------------------------------------- settings
+
+    private fun rulesText(): String =
+        (0 until rulesList.childCount).mapNotNull { i ->
+            val row = rulesList.getChildAt(i) as LinearLayout
+            val n = (row.getChildAt(0) as EditText).text.toString().replace(Regex("[=:]"), " ").trim()
+            val m = (row.getChildAt(1) as EditText).text.toString().trim()
+            if (n.isEmpty() || m.isEmpty()) null else "$n = $m"
+        }.joinToString("\n")
+
+    private fun saveAndRefresh() {
+        prefs.edit()
+            .putString("names", nameBox.text.toString())
+            .putString("lead", leadBox.text.toString())
+            .putString("rules", rulesText())
+            .putInt("dayMode", dayMode)
+            .apply()
+        refresh()
+    }
+
+    private fun addRuleRow(name: String, minutes: String, focusMinutes: Boolean = false) {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val nameField = field(name).apply { hint = "שם המשימה" }
+        val minField = field(minutes, number = true).apply {
+            hint = "דקות"
+            gravity = Gravity.CENTER
+        }
+        val remove = TextView(this).apply {
+            text = "✕"
+            textSize = 18f
+            setTextColor(MUTED)
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(8), dp(4), dp(8))
+            setOnClickListener {
+                rulesList.removeView(row)
+                saveAndRefresh()
+            }
+        }
+        row.addView(nameField, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 2f))
+        row.addView(minField, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            .apply { marginStart = dp(8) })
+        row.addView(remove)
+        nameField.addTextChangedListener(watcher)
+        minField.addTextChangedListener(watcher)
+        rulesList.addView(row, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(8) })
+        if (focusMinutes) minField.requestFocus()
+    }
+
+    /** Task names found in the message that do not have an early-alarm rule yet. */
+    private fun updateChips() {
+        val existing = AlarmParser.parseRules(rulesText()).keys
+        val free = AlarmParser.sections(messageBox.text.toString()).filter { s -> existing.none { it == s } }
+        chipsRow.removeAllViews()
+        free.forEach { name ->
+            chipsRow.addView(TextView(this).apply {
+                text = "＋ $name"
+                textSize = 14f
+                setTextColor(BLUE)
+                background = rounded(FIELD, 20)
+                setPadding(dp(14), dp(8), dp(14), dp(8))
+                setOnClickListener {
+                    addRuleRow(name, "", focusMinutes = true)
+                    saveAndRefresh()
+                }
+            }, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { marginEnd = dp(8) })
+        }
+        chipsWrap.visibility = if (free.isEmpty()) View.GONE else View.VISIBLE
+    }
+
+    // ------------------------------------------------------------------ day
+
+    private fun detectedDay(): Pair<Int, String> {
+        val head = messageBox.text.toString().take(200)
+        return when {
+            head.contains("מחר") -> 1 to "לפי ההודעה"
+            head.contains("היום") -> 0 to "לפי ההודעה"
+            Calendar.getInstance().get(Calendar.HOUR_OF_DAY) >= 17 -> 1 to "לפי השעה"
+            else -> 0 to "לפי השעה"
+        }
+    }
+
+    /** 0 = today, 1 = tomorrow */
+    private fun dayOffset(): Int = when (dayMode) {
+        1 -> 0
+        2 -> 1
+        else -> detectedDay().first
+    }
+
+    private fun targetTime(item: AlarmItem): Calendar = Calendar.getInstance().apply {
+        add(Calendar.DAY_OF_YEAR, dayOffset())
+        set(Calendar.HOUR_OF_DAY, item.minutes / 60)
+        set(Calendar.MINUTE, item.minutes % 60)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+    }
+
+    private fun isPast(item: AlarmItem) = targetTime(item).timeInMillis <= System.currentTimeMillis()
+
+    private fun updateSegments() {
+        segViews.forEachIndexed { i, tv ->
+            val on = i == dayMode
+            tv.background = if (on) rounded(ACCENT, 10) else null
+            tv.setTextColor(if (on) ON_ACCENT else MUTED)
+        }
+        val offset = dayOffset()
+        val name = if (offset == 0) "היום" else "מחר"
+        dayView.text = if (dayMode == 0) "אוטומטי: $name (${detectedDay().second})" else "השעונים ייקבעו ל$name"
+    }
+
+    // -------------------------------------------------------------- refresh
+
     private fun refresh() {
         val names = AlarmParser.parseNames(nameBox.text.toString())
-        val rules = AlarmParser.parseRules(rulesBox.text.toString())
+        val rules = AlarmParser.parseRules(rulesText())
         val lead = leadBox.text.toString().toIntOrNull() ?: 0
         items = AlarmParser.parse(messageBox.text.toString(), names, rules, lead)
         highlightLines(names)
+        updateChips()
+        updateSegments()
 
         listBox.removeAllViews()
         if (items.isEmpty()) {
@@ -140,10 +283,12 @@ class MainActivity : Activity() {
     }
 
     private fun row(item: AlarmItem): View {
+        val past = isPast(item)
         val r = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, dp(10), 0, dp(10))
+            alpha = if (past) 0.4f else 1f
         }
         r.addView(TextView(this).apply {
             text = fmt(item.minutes)
@@ -154,33 +299,60 @@ class MainActivity : Activity() {
             minWidth = dp(88)
         })
         r.addView(TextView(this).apply {
-            text = item.label
+            text = if (past) "${item.label} (עבר)" else item.label
             textSize = 18f
             setTextColor(TEXT)
         })
         return r
     }
 
+    // --------------------------------------------------------------- alarms
+
     private fun setAlarms() {
         if (items.isEmpty()) return
         handler.removeCallbacksAndMessages(null)
-        val toSet = items
-        toSet.forEachIndexed { index, item ->
+        val now = System.currentTimeMillis()
+        val dayMs = 24L * 60 * 60 * 1000
+        var sent = 0
+        var skipped = 0
+        var weekly = 0
+
+        items.forEach { item ->
+            val t = targetTime(item)
+            val diff = t.timeInMillis - now
+            if (diff <= 0) {
+                skipped++
+                return@forEach
+            }
+            // The clock app rings at the next occurrence of the time. Further than 24 hours away
+            // that would be the wrong day, so the weekday is passed as well.
+            val needsDay = diff > dayMs
+            if (needsDay) weekly++
             handler.postDelayed({
                 val alarm = Intent(AlarmClock.ACTION_SET_ALARM).apply {
                     putExtra(AlarmClock.EXTRA_HOUR, item.minutes / 60)
                     putExtra(AlarmClock.EXTRA_MINUTES, item.minutes % 60)
                     putExtra(AlarmClock.EXTRA_MESSAGE, item.label)
                     putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                    if (needsDay) {
+                        putIntegerArrayListExtra(AlarmClock.EXTRA_DAYS, arrayListOf(t.get(Calendar.DAY_OF_WEEK)))
+                    }
                 }
                 try {
                     startActivity(alarm)
                 } catch (e: Exception) {
                     statusView.append("\nנכשל: ${fmt(item.minutes)} ${item.label}")
                 }
-            }, index * 1200L)
+            }, sent * 1200L)
+            sent++
         }
-        statusView.text = "נשלחו ${toSet.size} שעונים לאפליקציית השעון.\nכדאי לבדוק שם שהכול נקבע."
+
+        val day = if (dayOffset() == 0) "להיום" else "למחר"
+        val sb = StringBuilder("נשלחו $sent שעונים $day לאפליקציית השעון.")
+        if (skipped > 0) sb.append("\n$skipped שעות כבר עברו ולא נקבעו.")
+        if (weekly > 0) sb.append("\n$weekly שעונים רחוקים מ-24 שעות, אז הם נקבעו כשעון שחוזר כל שבוע. כדאי למחוק אותם אחרי.")
+        sb.append("\nכדאי לבדוק באפליקציית השעון שהכול נקבע.")
+        statusView.text = sb.toString()
     }
 
     private fun openAlarmList() {
@@ -190,6 +362,8 @@ class MainActivity : Activity() {
             statusView.text = "לא הצלחתי לפתוח את אפליקציית השעון."
         }
     }
+
+    // ------------------------------------------------------------------ ui
 
     private fun fmt(m: Int) = "%02d:%02d".format(m / 60, m % 60)
 
@@ -212,7 +386,7 @@ class MainActivity : Activity() {
         this.text = text
         textSize = 12f
         setTextColor(MUTED)
-        setPadding(0, dp(12), 0, dp(4))
+        setPadding(0, dp(14), 0, dp(4))
     }
 
     private fun styled(e: EditText): EditText {
@@ -246,6 +420,30 @@ class MainActivity : Activity() {
             addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
             addView(trailing)
         }
+
+    private fun segmented(): LinearLayout {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = rounded(FIELD, 12)
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+        }
+        listOf("אוטומטי", "היום", "מחר").forEachIndexed { i, label ->
+            val tv = TextView(this).apply {
+                text = label
+                textSize = 15f
+                gravity = Gravity.CENTER
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setPadding(0, dp(9), 0, dp(9))
+                setOnClickListener {
+                    dayMode = i
+                    saveAndRefresh()
+                }
+            }
+            segViews.add(tv)
+            box.addView(tv, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        return box
+    }
 
     private fun buildUi() {
         val column = LinearLayout(this).apply {
@@ -311,6 +509,16 @@ class MainActivity : Activity() {
             setTextColor(ACCENT)
         }
         listCard.addView(headerRow(sectionTitle("השעונים שייקבעו"), countView))
+        listCard.addView(segmented(), LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(12) })
+        dayView = TextView(this).apply {
+            textSize = 12f
+            setTextColor(MUTED)
+            setPadding(dp(4), dp(6), 0, 0)
+        }
+        listCard.addView(dayView)
         listBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(8), 0, 0)
@@ -321,25 +529,38 @@ class MainActivity : Activity() {
         // Settings card
         val settingsCard = card()
         settingsCard.addView(sectionTitle("הגדרות"))
-        val prefs = getSharedPreferences("settings", Context.MODE_PRIVATE)
 
-        settingsCard.addView(smallLabel("השמות לחיפוש (אפשר כמה, מופרדים בפסיק)"))
+        settingsCard.addView(smallLabel("השמות שלי (אפשר כמה, מופרדים בפסיק)"))
         nameBox = field(prefs.getString("names", "") ?: "").apply { hint = "למשל: דנה, דני" }
         settingsCard.addView(nameBox)
 
-        settingsCard.addView(smallLabel("דקות לפני, לכל השעונים"))
+        settingsCard.addView(smallLabel("כמה דקות לפני המשמרת לצלצל (לכל השעונים)"))
         leadBox = field(prefs.getString("lead", "0") ?: "0", number = true)
         settingsCard.addView(leadBox)
 
-        settingsCard.addView(smallLabel("משימות עם שעון מוקדם (שורה לכל משימה: שם = דקות)"))
-        rulesBox = field(prefs.getString("rules", "") ?: "").apply {
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            minLines = 2
-            gravity = Gravity.TOP or Gravity.START
-            hint = "למשל:\nריקוד קצר = 30"
+        settingsCard.addView(smallLabel("משימות שצריכות שעון מוקדם יותר"))
+        rulesList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        settingsCard.addView(rulesList)
+        AlarmParser.parseRules(prefs.getString("rules", "") ?: "").forEach { (n, m) ->
+            addRuleRow(n, m.toString())
         }
-        settingsCard.addView(rulesBox)
 
+        chipsWrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        chipsWrap.addView(smallLabel("משימות בהודעה, הקש להוספה"))
+        chipsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        chipsWrap.addView(HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(chipsRow)
+        })
+        settingsCard.addView(chipsWrap)
+
+        settingsCard.addView(TextView(this).apply {
+            text = "＋ הוסף משימה"
+            textSize = 15f
+            setTextColor(BLUE)
+            setPadding(0, dp(14), 0, dp(2))
+            setOnClickListener { addRuleRow("", "") }
+        })
         column.addView(settingsCard, cardParams())
 
         // Action
@@ -389,18 +610,8 @@ class MainActivity : Activity() {
         }
         setContentView(scroll)
 
-        val watcher = object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-            override fun afterTextChanged(s: Editable?) {
-                prefs.edit()
-                    .putString("names", nameBox.text.toString())
-                    .putString("lead", leadBox.text.toString())
-                    .putString("rules", rulesBox.text.toString())
-                    .apply()
-                refresh()
-            }
-        }
-        listOf(messageBox, nameBox, leadBox, rulesBox).forEach { it.addTextChangedListener(watcher) }
+        messageBox.addTextChangedListener(watcher)
+        nameBox.addTextChangedListener(watcher)
+        leadBox.addTextChangedListener(watcher)
     }
 }
