@@ -40,8 +40,8 @@ class MainActivity : Activity() {
 
     private lateinit var messageBox: EditText
     private lateinit var nameBox: EditText
-    private lateinit var ruleNameBox: EditText
-    private lateinit var ruleLeadBox: EditText
+    private lateinit var rulesBox: EditText
+    private lateinit var leadBox: EditText
     private lateinit var listBox: LinearLayout
     private lateinit var countView: TextView
     private lateinit var setButton: Button
@@ -71,8 +71,9 @@ class MainActivity : Activity() {
         val clip = cm.primaryClip ?: return
         if (clip.itemCount == 0) return
         val text = clip.getItemAt(0).coerceToText(this).toString()
-        val name = nameBox.text.toString().trim()
-        if (text.isBlank() || text == lastClip || name.isEmpty() || !text.contains(name)) return
+        val names = AlarmParser.parseNames(nameBox.text.toString())
+        if (text.isBlank() || text == lastClip) return
+        if (names.isNotEmpty() && names.none { text.contains(it) }) return
         lastClip = text
         messageBox.setText(text)
         statusView.text = ""
@@ -92,17 +93,17 @@ class MainActivity : Activity() {
     }
 
     private fun refresh() {
-        val name = nameBox.text.toString().trim()
-        val ruleName = ruleNameBox.text.toString().trim()
-        val ruleLead = ruleLeadBox.text.toString().toIntOrNull() ?: 0
-        items = AlarmParser.parse(messageBox.text.toString(), name, ruleName, ruleLead)
-        highlightLines(name)
+        val names = AlarmParser.parseNames(nameBox.text.toString())
+        val rules = AlarmParser.parseRules(rulesBox.text.toString())
+        val lead = leadBox.text.toString().toIntOrNull() ?: 0
+        items = AlarmParser.parse(messageBox.text.toString(), names, rules, lead)
+        highlightLines(names)
 
         listBox.removeAllViews()
         if (items.isEmpty()) {
             listBox.addView(TextView(this).apply {
-                text = if (name.isEmpty()) "הקלד שם לחיפוש." else
-                    "אין עדיין שורות עם \"$name\".\nהעתק את ההודעה בוואטסאפ ופתח את האפליקציה."
+                text = if (names.isEmpty()) "הקלד בהגדרות את השם (או השמות) שלך." else
+                    "אין עדיין שורות עם ${names.joinToString(", ") { "\"$it\"" }}.\nהעתק את ההודעה ופתח את האפליקציה."
                 setTextColor(MUTED)
                 textSize = 14f
             })
@@ -120,15 +121,15 @@ class MainActivity : Activity() {
         setButton.alpha = if (items.isEmpty()) 0.4f else 1f
     }
 
-    /** Marks every line of the message that contains the chosen name. */
-    private fun highlightLines(name: String) {
+    /** Marks every line of the message that contains one of the chosen names. */
+    private fun highlightLines(names: List<String>) {
         val editable = messageBox.text
         editable.getSpans(0, editable.length, BackgroundColorSpan::class.java)
             .forEach { editable.removeSpan(it) }
-        if (name.isEmpty()) return
+        if (names.isEmpty()) return
         var start = 0
         for (line in editable.toString().split("\n")) {
-            if (line.contains(name)) {
+            if (names.any { line.contains(it) }) {
                 editable.setSpan(
                     BackgroundColorSpan(HIGHLIGHT), start, start + line.length,
                     Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
@@ -253,13 +254,13 @@ class MainActivity : Activity() {
         }
 
         column.addView(TextView(this).apply {
-            text = "שעוני ביגל"
+            text = "שעוני משמרות"
             textSize = 32f
             setTextColor(TEXT)
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
         })
         column.addView(TextView(this).apply {
-            text = "מעתיקים את ההודעה בוואטסאפ, פותחים כאן, ולוחצים פעם אחת."
+            text = "מעתיקים את ההודעה, פותחים כאן, ולוחצים פעם אחת. ההגדרות נשמרות."
             textSize = 14f
             setTextColor(MUTED)
             setPadding(0, dp(4), 0, dp(20))
@@ -320,23 +321,24 @@ class MainActivity : Activity() {
         // Settings card
         val settingsCard = card()
         settingsCard.addView(sectionTitle("הגדרות"))
-        settingsCard.addView(smallLabel("שם לחיפוש"))
-        nameBox = field("ביגל")
+        val prefs = getSharedPreferences("settings", Context.MODE_PRIVATE)
+
+        settingsCard.addView(smallLabel("השמות לחיפוש (אפשר כמה, מופרדים בפסיק)"))
+        nameBox = field(prefs.getString("names", "") ?: "").apply { hint = "למשל: דנה, דני" }
         settingsCard.addView(nameBox)
 
-        val ruleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val ruleLeft = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        ruleLeft.addView(smallLabel("משימה עם שעון מוקדם"))
-        ruleNameBox = field("ריקוד קצר")
-        ruleLeft.addView(ruleNameBox)
-        val ruleRight = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        ruleRight.addView(smallLabel("דקות לפני"))
-        ruleLeadBox = field("30", number = true)
-        ruleRight.addView(ruleLeadBox)
-        ruleRow.addView(ruleLeft, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 2f))
-        ruleRow.addView(ruleRight, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            .apply { marginStart = dp(12) })
-        settingsCard.addView(ruleRow)
+        settingsCard.addView(smallLabel("דקות לפני, לכל השעונים"))
+        leadBox = field(prefs.getString("lead", "0") ?: "0", number = true)
+        settingsCard.addView(leadBox)
+
+        settingsCard.addView(smallLabel("משימות עם שעון מוקדם (שורה לכל משימה: שם = דקות)"))
+        rulesBox = field(prefs.getString("rules", "") ?: "").apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 2
+            gravity = Gravity.TOP or Gravity.START
+            hint = "למשל:\nריקוד קצר = 30"
+        }
+        settingsCard.addView(rulesBox)
 
         column.addView(settingsCard, cardParams())
 
@@ -390,8 +392,15 @@ class MainActivity : Activity() {
         val watcher = object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-            override fun afterTextChanged(s: Editable?) { refresh() }
+            override fun afterTextChanged(s: Editable?) {
+                prefs.edit()
+                    .putString("names", nameBox.text.toString())
+                    .putString("lead", leadBox.text.toString())
+                    .putString("rules", rulesBox.text.toString())
+                    .apply()
+                refresh()
+            }
         }
-        listOf(messageBox, nameBox, ruleNameBox, ruleLeadBox).forEach { it.addTextChangedListener(watcher) }
+        listOf(messageBox, nameBox, leadBox, rulesBox).forEach { it.addTextChangedListener(watcher) }
     }
 }

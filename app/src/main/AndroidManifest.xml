@@ -6,7 +6,7 @@
     <application
         android:allowBackup="false"
         android:icon="@android:drawable/ic_lock_idle_alarm"
-        android:label="שעוני ביגל"
+        android:label="שעוני משמרות"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
 
